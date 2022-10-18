@@ -27,6 +27,21 @@ logger = get_logger(__name__)
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Simple example of a training script.")
+
+    parser.add_argument(
+        "--save_n_steps",
+        type=int,
+        default=None,
+        help="Save the model every n global_steps",
+    )
+
+    parser.add_argument(
+        "--output_prefix",
+        type=str,
+        default="",
+        help="prefix to the name of the output folders",
+    )
+    
     parser.add_argument(
         "--pretrained_model_name_or_path",
         type=str,
@@ -602,19 +617,36 @@ def main():
             if global_step >= args.max_train_steps:
                 break
 
+            # save checkpoints every n steps
+            if args.save_n_steps is not None:
+                do_save = ((global_step+1) % args.save_n_steps) == 0
+                if do_save:
+                    ckpt_name = "_step_" + str(global_step+1)
+                    # save dir
+                    save_dir = Path(args.output_prefix+args.output_dir+ckpt_name)
+                    if not save_dir.exists(): # create dir if not exists
+                        save_dir.mkdir(parents=True)
+                    
+                    print("SAVING CHECKPOINT: " + (args.output_prefix+args.output_dir+ckpt_name))
+
+                    # Create the pipeline using the trained modules and save it.
+                    if accelerator.is_main_process:
+                        pipeline = StableDiffusionPipeline.from_pretrained(
+                                            args.pretrained_model_name_or_path, unet=accelerator.unwrap_model(unet)
+                        )
+                        pipeline.save_pretrained(save_dir)
+
         accelerator.wait_for_everyone()
 
-    # Create the pipeline using using the trained modules and save it.
-    if accelerator.is_main_process:
-        pipeline = StableDiffusionPipeline.from_pretrained(
-            args.pretrained_model_name_or_path,
-            unet=accelerator.unwrap_model(unet),
-            text_encoder=accelerator.unwrap_model(text_encoder),
-        )
-        pipeline.save_pretrained(args.output_dir)
+    # Create the pipeline using the trained modules and save it.
+    #if accelerator.is_main_process:
+    #    pipeline = StableDiffusionPipeline.from_pretrained(
+    #        args.pretrained_model_name_or_path, unet=accelerator.unwrap_model(unet)
+    #    )
+    #    pipeline.save_pretrained(args.output_dir)
 
-        if args.push_to_hub:
-            repo.push_to_hub(commit_message="End of training", blocking=False, auto_lfs_prune=True)
+        #if args.push_to_hub:
+         #   repo.push_to_hub(commit_message="End of training", blocking=False, auto_lfs_prune=True)
 
     accelerator.end_training()
 
