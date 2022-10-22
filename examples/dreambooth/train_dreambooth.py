@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 from typing import Optional
 
+import deepspeed
 import torch
 import torch.nn.functional as F
 import torch.utils.checkpoint
@@ -40,6 +41,19 @@ def parse_args():
         type=str,
         default="",
         help="prefix to the name of the output folders",
+    )
+
+    parser.add_argument(
+        "--image_captions_json",
+        type=str,
+        default="",
+        help="Path to json file containing image captions",
+    )
+
+    parser.add_argument(
+        "--image_captions_filename",
+        action="store_true",
+        help="Get captions from filename",
     )
     
     parser.add_argument(
@@ -231,6 +245,7 @@ class DreamBoothDataset(Dataset):
         instance_data_root,
         instance_prompt,
         tokenizer,
+        args,
         class_data_root=None,
         class_prompt=None,
         size=512,
@@ -239,6 +254,8 @@ class DreamBoothDataset(Dataset):
         self.size = size
         self.center_crop = center_crop
         self.tokenizer = tokenizer
+        self.image_captions_json = None
+        self.image_captions_filename = None
 
         self.instance_data_root = Path(instance_data_root)
         if not self.instance_data_root.exists():
@@ -248,6 +265,23 @@ class DreamBoothDataset(Dataset):
         self.num_instance_images = len(self.instance_images_path)
         self.instance_prompt = instance_prompt
         self._length = self.num_instance_images
+
+        # load json file with captions if enabled    
+        if args.image_captions_json:
+            import json
+            file = open(args.image_captions_json)
+            data = json.load(file)
+
+            if not data.get('images'):
+                print("missing 'images' field in json file")
+                exit(0)
+
+            self.image_captions_json = data.get('images')
+            print("LOADING IMAGE CAPTIONS FROM: " + args.image_captions_json)
+
+        if args.image_captions_filename:
+            self.image_captions_filename = True
+
 
         if class_data_root is not None:
             self.class_data_root = Path(class_data_root)
@@ -273,19 +307,38 @@ class DreamBoothDataset(Dataset):
 
     def __getitem__(self, index):
         example = {}
-        instance_image = Image.open(self.instance_images_path[index % self.num_instance_images])
+        path = self.instance_images_path[index % self.num_instance_images]
+        instance_image = Image.open(path)
         if not instance_image.mode == "RGB":
             instance_image = instance_image.convert("RGB")
+
+        instance_prompt = self.instance_prompt
+
+        # get prompt keywords from json
+        if self.image_captions_json:
+            filename = Path(path).stem
+            prompt = self.image_captions_json.get(filename)
+            if prompt:
+                instance_prompt = self.instance_prompt + " " + " ".join(prompt)
+                print(instance_prompt)
+
+        # get keywords from file name
+        if self.image_captions_filename:
+            filename = Path(path).stem
+            instance_prompt = self.instance_prompt + " " + filename
+            print(instance_prompt)
+
         example["instance_images"] = self.image_transforms(instance_image)
         example["instance_prompt_ids"] = self.tokenizer(
-            self.instance_prompt,
+            instance_prompt,
             padding="do_not_pad",
             truncation=True,
             max_length=self.tokenizer.model_max_length,
         ).input_ids
 
         if self.class_data_root:
-            class_image = Image.open(self.class_images_path[index % self.num_class_images])
+            path = self.class_images_path[index % self.num_class_images]
+            class_image = Image.open(path)                
             if not class_image.mode == "RGB":
                 class_image = class_image.convert("RGB")
             example["class_images"] = self.image_transforms(class_image)
@@ -436,7 +489,7 @@ def main():
 
         optimizer_class = bnb.optim.AdamW8bit
     else:
-        optimizer_class = torch.optim.AdamW
+        optimizer_class = deepspeed.ops.adam.DeepSpeedCPUAdam
 
     params_to_optimize = (
         itertools.chain(unet.parameters(), text_encoder.parameters()) if args.train_text_encoder else unet.parameters()
@@ -461,6 +514,7 @@ def main():
         tokenizer=tokenizer,
         size=args.resolution,
         center_crop=args.center_crop,
+        args=args
     )
 
     def collate_fn(examples):
