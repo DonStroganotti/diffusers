@@ -261,7 +261,15 @@ class DreamBoothDataset(Dataset):
         if not self.instance_data_root.exists():
             raise ValueError("Instance images root doesn't exists.")
 
-        self.instance_images_path = list(Path(instance_data_root).iterdir())
+
+        # check directories recursively for training images 
+        images_path_list = list()
+
+        for child in self.instance_data_root.rglob('*'):
+            if child.is_file():
+                images_path_list.append(child)
+
+        self.instance_images_path = images_path_list #list(Path(instance_data_root).iterdir())
         self.num_instance_images = len(self.instance_images_path)
         self.instance_prompt = instance_prompt
         self._length = self.num_instance_images
@@ -279,6 +287,7 @@ class DreamBoothDataset(Dataset):
             self.image_captions_json = data.get('images')
             print("LOADING IMAGE CAPTIONS FROM: " + args.image_captions_json)
 
+        # if loading from filename is enabled
         if args.image_captions_filename:
             self.image_captions_filename = True
 
@@ -319,14 +328,19 @@ class DreamBoothDataset(Dataset):
             filename = Path(path).stem
             prompt = self.image_captions_json.get(filename)
             if prompt:
-                instance_prompt = self.instance_prompt + " " + " ".join(prompt)
+                # add captions to the instance prompt from json
+                instance_prompt = instance_prompt + " " + " ".join(prompt)
                 print(instance_prompt)
 
         # get keywords from file name
         if self.image_captions_filename:
             filename = Path(path).stem
-            instance_prompt = self.instance_prompt + " " + filename
+            # add captions to the instance prompt from filename
+            instance_prompt = instance_prompt + " " + filename
             print(instance_prompt)
+        
+        # remove numbers and some symbols from prompt
+        
 
         example["instance_images"] = self.image_transforms(instance_image)
         example["instance_prompt_ids"] = self.tokenizer(
