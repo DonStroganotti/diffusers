@@ -1,4 +1,5 @@
 import argparse
+from ast import arg
 import itertools
 import math
 import os
@@ -707,14 +708,26 @@ def main():
         accelerator.wait_for_everyone()
 
     # Create the pipeline using the trained modules and save it.
-    #if accelerator.is_main_process:
-    #    pipeline = StableDiffusionPipeline.from_pretrained(
-    #        args.pretrained_model_name_or_path, unet=accelerator.unwrap_model(unet)
-    #    )
-    #    pipeline.save_pretrained(args.output_dir)
+    if accelerator.is_main_process:
+        do_save = math.ceil(((global_step) / args.max_train_steps)) != 0
+        if do_save: # only save at the end if global steps is greater than max steps
+            ckpt_name = "_step_" + str(global_step)
+            # save dir
+            save_dir = Path(args.output_prefix+args.output_dir+ckpt_name)
+            if not save_dir.exists(): # create dir if not exists
+                save_dir.mkdir(parents=True)
+            
+            print("SAVING FINAL CHECKPOINT: " + (args.output_prefix+args.output_dir+ckpt_name))
 
-        #if args.push_to_hub:
-         #   repo.push_to_hub(commit_message="End of training", blocking=False, auto_lfs_prune=True)
+            # Create the pipeline using the trained modules and save it.
+            if accelerator.is_main_process:
+                pipeline = StableDiffusionPipeline.from_pretrained(
+                                    args.pretrained_model_name_or_path, unet=accelerator.unwrap_model(unet)
+                )
+                pipeline.save_pretrained(save_dir)
+
+        # if args.push_to_hub:
+        #     repo.push_to_hub(commit_message="End of training", blocking=False, auto_lfs_prune=True)
 
     accelerator.end_training()
 
