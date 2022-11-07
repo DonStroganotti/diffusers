@@ -6,7 +6,9 @@ import os
 from pathlib import Path
 from typing import Optional
 
+import re
 import deepspeed
+
 import torch
 import torch.nn.functional as F
 import torch.utils.checkpoint
@@ -234,6 +236,23 @@ def parse_args():
 
     return args
 
+def find_largest_same_aspect_64(x,y, max_pixels):
+    _x = x 
+    _y= y
+    pixelcount = _x*_y
+    while(pixelcount > max_pixels):
+        _x -= 1
+        _y -= 1
+        pixelcount = _x*_y
+    
+    remainder_x = _x % 64
+    remainder_y = _y % 64
+
+    larger = (_x+remainder_x) * (_y+remainder_y)
+    if(larger < max_pixels):
+        return [(_x+remainder_x),(_y+remainder_y), (_x+remainder_x), (_y+remainder_y)]
+    else:
+        return [_x,_y, (_x-remainder_x), (_y-remainder_y)]
 
 class DreamBoothDataset(Dataset):
     """
@@ -303,14 +322,24 @@ class DreamBoothDataset(Dataset):
         else:
             self.class_data_root = None
 
-        self.image_transforms = transforms.Compose(
-            [
-                transforms.Resize(size, interpolation=transforms.InterpolationMode.BILINEAR),
-                transforms.CenterCrop(size) if center_crop else transforms.RandomCrop(size),
-                transforms.ToTensor(),
-                transforms.Normalize([0.5], [0.5]),
-            ]
-        )
+        # self.image_transforms = transforms.Compose(
+        #     [
+        #         transforms.Resize(size, interpolation=transforms.InterpolationMode.BILINEAR),
+        #         transforms.CenterCrop(size) if center_crop else transforms.RandomCrop(size),
+        #         transforms.ToTensor(),
+        #         transforms.Normalize([0.5], [0.5]),
+        #     ]
+        # )
+
+        # custom image transform to augment the training data
+        # self.custom_image_transforms = transforms.Compose(
+        #     [
+        #         # transforms.Resize(size, interpolation=transforms.InterpolationMode.BILINEAR),
+        #         transforms.RandomHorizontalFlip(0.5),
+        #         transforms.ToTensor(),
+        #         transforms.Normalize([0.5], [0.5]),
+        #     ]
+        # )
 
     def __len__(self):
         return self._length
@@ -319,6 +348,28 @@ class DreamBoothDataset(Dataset):
         example = {}
         path = self.instance_images_path[index % self.num_instance_images]
         instance_image = Image.open(path)
+        x = instance_image.size[0]
+        y = instance_image.size[1]
+
+        result = find_largest_same_aspect_64(x,y, 512*768)
+
+        scaleX = result[0]
+        scaleY = result[1]
+        cropX = result[2]
+        cropY = result[3]
+
+        # create a transform to scale and crop image to make sure it fits into VRAM properly
+        self.custom_image_transforms = transforms.Compose(
+            [
+                transforms.Resize(size=[scaleX, scaleY], interpolation=transforms.InterpolationMode.BILINEAR),
+                transforms.RandomCrop(size=[cropX,cropY]),
+                transforms.RandomHorizontalFlip(0.5),
+                transforms.ToTensor(),
+                transforms.Normalize([0.5], [0.5]),
+            ]
+        )
+
+
         if not instance_image.mode == "RGB":
             instance_image = instance_image.convert("RGB")
 
@@ -338,12 +389,12 @@ class DreamBoothDataset(Dataset):
             filename = Path(path).stem
             # add captions to the instance prompt from filename
             instance_prompt = instance_prompt + " " + filename
-            print(instance_prompt)
         
-        # remove numbers and some symbols from prompt
-        
+        instance_prompt = re.sub("\(\s*[0-9]+\s*\)","", instance_prompt) # remove numbers in parenthesis 
+        instance_prompt = re.sub("\s+"," ",instance_prompt) # remove extra whitespaces
+        print(instance_prompt, cropX, cropY)
 
-        example["instance_images"] = self.image_transforms(instance_image)
+        example["instance_images"] = self.custom_image_transforms(instance_image)
         example["instance_prompt_ids"] = self.tokenizer(
             instance_prompt,
             padding="do_not_pad",
@@ -356,7 +407,7 @@ class DreamBoothDataset(Dataset):
             class_image = Image.open(path)                
             if not class_image.mode == "RGB":
                 class_image = class_image.convert("RGB")
-            example["class_images"] = self.image_transforms(class_image)
+            example["class_images"] = self.custom_image_transforms(class_image)
             example["class_prompt_ids"] = self.tokenizer(
                 self.class_prompt,
                 padding="do_not_pad",
@@ -709,7 +760,7 @@ def main():
 
     # Create the pipeline using the trained modules and save it.
     if accelerator.is_main_process:
-        do_save = math.ceil(((global_step) / args.max_train_steps)) != 0
+        do_save = (global_step % args.save_n_steps) != 0
         if do_save: # only save at the end if global steps is greater than max steps
             ckpt_name = "_step_" + str(global_step)
             # save dir
