@@ -238,21 +238,21 @@ def parse_args():
 
 def find_largest_same_aspect_64(x,y, max_pixels):
     _x = x 
-    _y= y
+    _y = y
     pixelcount = _x*_y
+
     while(pixelcount > max_pixels):
-        _x -= 1
-        _y -= 1
+        _x *= 0.99
+        _y *= 0.99
         pixelcount = _x*_y
     
+    _x =  math.ceil(_x)
+    _y =  math.ceil(_y)
+
     remainder_x = _x % 64
     remainder_y = _y % 64
 
-    larger = (_x+remainder_x) * (_y+remainder_y)
-    if(larger < max_pixels):
-        return [(_x+remainder_x),(_y+remainder_y), (_x+remainder_x), (_y+remainder_y)]
-    else:
-        return [_x,_y, (_x-remainder_x), (_y-remainder_y)]
+    return [_x,_y, (_x-remainder_x), (_y-remainder_y)]
 
 class DreamBoothDataset(Dataset):
     """
@@ -361,8 +361,8 @@ class DreamBoothDataset(Dataset):
         # create a transform to scale and crop image to make sure it fits into VRAM properly
         self.custom_image_transforms = transforms.Compose(
             [
-                transforms.Resize(size=[scaleX, scaleY], interpolation=transforms.InterpolationMode.BILINEAR),
-                transforms.RandomCrop(size=[cropX,cropY]),
+                transforms.Resize(size=[scaleY,scaleX], interpolation=transforms.InterpolationMode.BILINEAR),
+                transforms.RandomCrop(size=[cropY,cropX]),
                 transforms.RandomHorizontalFlip(0.5),
                 transforms.ToTensor(),
                 transforms.Normalize([0.5], [0.5]),
