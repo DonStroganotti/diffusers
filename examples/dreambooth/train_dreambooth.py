@@ -351,24 +351,25 @@ class DreamBoothDataset(Dataset):
         x = instance_image.size[0]
         y = instance_image.size[1]
 
-        result = find_largest_same_aspect_64(x,y, 512*768)
+        result = find_largest_same_aspect_64(x,y, 672*672)
 
         scaleX = result[0]
         scaleY = result[1]
         cropX = result[2]
         cropY = result[3]
 
-        # create a transform to scale and crop image to make sure it fits into VRAM properly
-        self.custom_image_transforms = transforms.Compose(
-            [
-                transforms.Resize(size=[scaleY,scaleX], interpolation=transforms.InterpolationMode.BILINEAR),
-                transforms.RandomCrop(size=[cropY,cropX]),
-                transforms.RandomHorizontalFlip(0.5),
-                transforms.ToTensor(),
-                transforms.Normalize([0.5], [0.5]),
-            ]
-        )
+        # check if folder path/name contains "noflip"
+        noflip = "noflip" in str(path)
 
+        tflist = list()
+        tflist.append(transforms.Resize(size=[scaleY,scaleX], interpolation=transforms.InterpolationMode.BILINEAR))
+        tflist.append(transforms.RandomCrop(size=[cropY,cropX]))
+        if not noflip: tflist.append(transforms.RandomHorizontalFlip(p=0.5))
+        tflist.append(transforms.ToTensor())
+        tflist.append(transforms.Normalize([0.5], [0.5]))
+
+        # create a transform to scale and crop image to make sure it fits into VRAM properly
+        self.custom_image_transforms = transforms.Compose(tflist)
 
         if not instance_image.mode == "RGB":
             instance_image = instance_image.convert("RGB")
@@ -397,7 +398,7 @@ class DreamBoothDataset(Dataset):
         example["instance_images"] = self.custom_image_transforms(instance_image)
         example["instance_prompt_ids"] = self.tokenizer(
             instance_prompt,
-            padding="do_not_pad",
+            padding=True,
             truncation=True,
             max_length=self.tokenizer.model_max_length,
         ).input_ids
@@ -410,7 +411,7 @@ class DreamBoothDataset(Dataset):
             example["class_images"] = self.custom_image_transforms(class_image)
             example["class_prompt_ids"] = self.tokenizer(
                 self.class_prompt,
-                padding="do_not_pad",
+                padding=True,
                 truncation=True,
                 max_length=self.tokenizer.model_max_length,
             ).input_ids
@@ -455,6 +456,15 @@ def main():
         log_with="tensorboard",
         logging_dir=logging_dir,
     )
+
+    global_step_start = 0
+
+    # checks if the pretrained model name has a step value, and store it for later
+    match = re.match("(.+step_)(\d+)",args.pretrained_model_name_or_path)
+
+    if match:
+      global_step_start = int(match.group(2))
+      print("GLOBAL STEP START:", global_step_start)
 
     # Currently, it's not possible to do gradient accumulation when training two models with accelerate.accumulate
     # This will be enabled soon in accelerate. For now, we don't allow gradient accumulation when training two models.
@@ -672,6 +682,9 @@ def main():
     progress_bar.set_description("Steps")
     global_step = 0
 
+    epoch_loss = 0
+    epoch_loss_ema = 1
+
     for epoch in range(args.num_train_epochs):
         unet.train()
         for step, batch in enumerate(train_dataloader):
@@ -734,6 +747,15 @@ def main():
             progress_bar.set_postfix(**logs)
             accelerator.log(logs, step=global_step)
 
+            # accumulate mean loss for epoch
+            # epoch_loss += loss.detach().item()
+
+            # if((global_step % num_update_steps_per_epoch) == 0 and (global_step != 0)):
+            #     epoch_loss /= num_update_steps_per_epoch
+            #     epoch_loss_ema += (epoch_loss - epoch_loss_ema) * 0.5
+            #     print("epoch loss:", epoch_loss, "epoch loss ema:", epoch_loss_ema)
+            #     epoch_loss = 0
+
             if global_step >= args.max_train_steps:
                 break
 
@@ -741,7 +763,7 @@ def main():
             if args.save_n_steps is not None:
                 do_save = ((global_step+1) % args.save_n_steps) == 0
                 if do_save:
-                    ckpt_name = "_step_" + str(global_step+1)
+                    ckpt_name = "_step_" + str(global_step+1+global_step_start)
                     # save dir
                     save_dir = Path(args.output_prefix+args.output_dir+ckpt_name)
                     if not save_dir.exists(): # create dir if not exists
@@ -762,7 +784,7 @@ def main():
     if accelerator.is_main_process:
         do_save = (global_step % args.save_n_steps) != 0
         if do_save: # only save at the end if global steps is greater than max steps
-            ckpt_name = "_step_" + str(global_step)
+            ckpt_name = "_step_" + str(global_step+global_step_start)
             # save dir
             save_dir = Path(args.output_prefix+args.output_dir+ckpt_name)
             if not save_dir.exists(): # create dir if not exists
